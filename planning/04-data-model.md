@@ -70,8 +70,10 @@ Player {
   role, // LEADER | MEMBER
   clientTokenHash,
   stats: {
-    coc,
-    calibrationEma,
+    // signed calibration-bias score in range -1.0 to 1.0; 0.0 is best aligned
+    cocBias,
+    cfEma,
+    calibrationErrorEma,
     lcfHcrCount,
     hcfLcrCount,
     cfVolatility,
@@ -111,7 +113,8 @@ Submission {
   answer,
   normalizedAnswer,
   cf,
-  cocAtSubmission,
+  cocBiasAtSubmission,
+  adjustedCf,
   effectiveWeight,
   submittedAt,
   updatedAt,
@@ -130,10 +133,22 @@ QuestionAggregate {
   version,
   rawAnswer,
   cfWeightedAnswer,
-  cocWeightedAnswer,
+  cocAdjustedAnswer,
   rawBreakdown,
   cfBreakdown,
-  cocBreakdown,
+  cocAdjustedBreakdown,
+  leaderMemberBreakdown: [
+    {
+      playerId,
+      displayName,
+      answer,
+      cf,
+      cocBias,
+      adjustedCf,
+      effectiveWeight,
+      contributionLabel
+    }
+  ],
   updatedAt
 }
 ```
@@ -147,7 +162,7 @@ FinalAnswer {
   questionId,
   teamId,
   answer,
-  provenance, // RAW | CF_WEIGHTED | COC_WEIGHTED | CUSTOM
+  provenance, // RAW | CF_WEIGHTED | COC_ADJUSTED | CUSTOM
   submittedByPlayerId,
   submittedAt,
   scoreAwarded,

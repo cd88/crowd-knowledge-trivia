@@ -8,13 +8,13 @@ For each option:
 
 - raw vote count
 - sum of CF
-- sum of CF × CoC
+- sum of CoC-adjusted CF
 
 Outputs:
 
 - raw plurality answer
 - CF-weighted answer
-- CF × CoC-weighted answer
+- CoC-adjusted answer
 
 ### Numeric/scalar aggregation
 
@@ -23,7 +23,7 @@ For numeric answers:
 - raw median
 - raw mean
 - CF-weighted mean
-- CF × CoC-weighted mean
+- CoC-adjusted mean
 
 Prototype display should probably show:
 
@@ -97,51 +97,90 @@ Speed bonus should be optional for numeric questions because rushing may make th
 
 ### Design intent
 
-CoC should reward calibrated confidence, not merely correctness.
+CoC should track calibration bias, not merely correctness.
+
+Use a signed score resembling a correlation-style index:
+
+```txt
+CoC bias range = -1.0 to 1.0
+```
+
+Where:
+
+```txt
+-1.0 = strongly underconfident
+ 0.0 = well aligned / calibrated
+ 1.0 = strongly overconfident
+```
+
+This is intentionally different from a simple “reliability score.” A player with `CoC = 0.0` is not average; they are aligned. The further they drift from zero, the more the system should interpret their CF as biased.
 
 Good patterns:
 
 - high CF + correct
 - low CF + wrong
-- medium CF + uncertain result
+- medium CF + medium/ambiguous correctness
 
 Interesting pattern:
 
-- low CF + correct: possible hidden signal / underconfidence
+- low CF + correct: possible hidden signal / underconfidence; future CF defaults and weighting should be nudged upward
 
 Bad pattern:
 
-- high CF + wrong: overconfidence
+- high CF + wrong: overconfidence; future CF defaults and weighting should be nudged downward
 
-### Per-round calibration score
+### Correctness value
 
-For multiple-choice, use a simple Brier-style score.
+Convert every answer into a `correctness` score from `0.0–1.0`.
 
-If answer is correct:
-
-```txt
-roundCalibration = 1 - (1 - CF)^2
-```
-
-If answer is wrong:
+For multiple-choice:
 
 ```txt
-roundCalibration = 1 - CF^2
+correctness = 1.0 if correct, else 0.0
 ```
 
-This gives:
+For numeric answers, convert error to correctness:
 
-- high CF correct: high score
-- low CF wrong: high score
-- high CF wrong: low score
-- low CF correct: moderate score, but flagged as underconfidence
+```txt
+correctness = max(0, 1 - percentError / tolerance)
+```
+
+If tolerance is 20%, then:
+
+- exact answer = 1.0
+- 10% off = 0.5
+- 20%+ off = 0.0
+
+### Per-round CoC bias
+
+Compare stated confidence to actual correctness:
+
+```txt
+roundBias = CF - correctness
+```
+
+Interpretation:
+
+```txt
+roundBias < 0  => underconfident
+roundBias = 0  => aligned
+roundBias > 0  => overconfident
+```
+
+Examples:
+
+```txt
+CF 0.25 + correct answer      => roundBias = -0.75  // underconfident
+CF 0.90 + wrong answer        => roundBias =  0.90  // overconfident
+CF 0.70 + 70% numeric quality => roundBias =  0.00  // aligned
+```
 
 ### CoC update
 
-Use exponential moving average with decay:
+Use an exponential moving average with decay:
 
 ```txt
-newCoC = oldCoC × decay + roundCalibration × learningRate
+newCoCBias = oldCoCBias × decay + roundBias × learningRate
 ```
 
 Normalize:
@@ -155,26 +194,73 @@ Suggested prototype values:
 ```txt
 decay = 0.85
 learningRate = 0.15
-startingCoC = 0.75
-minCoC = 0.25
-maxCoC = 1.25
+startingCoCBias = 0.0
+minCoCBias = -1.0
+maxCoCBias = 1.0
 ```
 
-The displayed CoC can be normalized to a friendly 0–100 scale, but internally it should be usable as a multiplier.
-
-### CoC multiplier
-
-Convert CoC score to a multiplier:
+The displayed CoC should be humanized as a calibration-bias indicator, not as a “good/bad score.” Example labels:
 
 ```txt
-CoCMultiplier = clamp(0.25, 1.25, CoC)
+-0.60 to -1.00 => very underconfident
+-0.25 to -0.59 => underconfident
+-0.24 to  0.24 => aligned
+ 0.25 to  0.59 => overconfident
+ 0.60 to  1.00 => very overconfident
 ```
 
-Effective answer weight:
+### CF default for the next answer
+
+The next answer’s CF input should default from the player’s running calibration state, not from a static low-confidence default.
+
+Prototype formula:
 
 ```txt
-effectiveWeight = CF × CoCMultiplier
+baseDefaultCF = player.cfEma || 0.35
+suggestedCF = clamp(0.05, 0.95, baseDefaultCF - (player.CoCBias × correctionStrength))
 ```
+
+Suggested value:
+
+```txt
+correctionStrength = 0.25
+```
+
+Because positive CoC means overconfidence, subtracting it lowers the suggested CF. Because negative CoC means underconfidence, subtracting it raises the suggested CF.
+
+Examples:
+
+```txt
+recent CF 0.40, CoC -0.40 => suggested CF 0.50
+recent CF 0.80, CoC  0.40 => suggested CF 0.70
+recent CF 0.60, CoC  0.00 => suggested CF 0.60
+```
+
+Players can always override the default. The default is a nudge and a reflective prompt, not an enforcement mechanism.
+
+### CoC-adjusted answer weight
+
+Do not multiply by raw CoC directly, because `0.0` is the ideal calibrated value. Instead, convert signed CoC bias into an adjusted CF.
+
+Prototype formula:
+
+```txt
+adjustedCF = clamp(0.05, 0.95, CF - (CoCBias × correctionStrength))
+effectiveWeight = adjustedCF
+```
+
+Optional later:
+
+```txt
+reliabilityPenalty = 1 - abs(CoCBias) × penaltyStrength
+effectiveWeight = adjustedCF × reliabilityPenalty
+```
+
+For the prototype, keep it simple: use adjusted CF only. This directly implements the desired behavior:
+
+- LCF-HCR / underconfident players get nudged upward over time
+- HCF-LCR / overconfident players get nudged downward over time
+- well-calibrated players remain close to their stated CF
 
 ### Underconfidence / overconfidence flags
 
@@ -182,36 +268,14 @@ Track rolling tendencies:
 
 - LCF-HCR: low CF, correct / close
 - HCF-LCR: high CF, wrong / far
-- volatility: large swings in CF accuracy
+- volatility: large swings in calibration bias
 
 Suggested thresholds:
 
 ```txt
 lowCF <= 0.4
 highCF >= 0.75
+alignedCoC = abs(CoCBias) <= 0.24
 ```
 
-Numeric questions need closeness bands instead of binary correct/wrong.
-
-### Numeric correctness conversion
-
-For numeric answers, convert error to correctness score from 0–1.
-
-Example:
-
-```txt
-correctness = max(0, 1 - percentError / tolerance)
-```
-
-If tolerance is 20%, then:
-
-- exact answer = 1.0
-- 10% off = 0.5
-- 20%+ off = 0.0
-
-Then compare CF to correctness:
-
-```txt
-calibrationError = abs(CF - correctness)
-roundCalibration = 1 - calibrationError
-```
+Numeric questions use closeness bands instead of binary correct/wrong.

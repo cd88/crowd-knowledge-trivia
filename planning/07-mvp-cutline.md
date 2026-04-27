@@ -9,7 +9,9 @@
 - Host starts game.
 - Multiple-choice and numeric questions from a seeded question list.
 - Player submits answer + CF.
+- Player CF defaults are nudged from running CoC/calibration state.
 - Aggregates shown.
+- Leader can drill into teammate answer/CF/CoC submissions.
 - Leader submits final answer.
 - Correct answer revealed.
 - CoC updates.
@@ -50,12 +52,14 @@
 - submission endpoint
 - aggregate snapshot generation
 - leader final answer endpoint
+- leader team-submission drill-down
 
 ### Phase 3: Scoring + CoC
 
 - correctness scoring
 - CF calibration scoring
-- CoC update
+- signed CoC-bias update in `-1.0–1.0` range
+- next-round CF default calculation
 - post-round feedback snippets
 - scoreboards
 

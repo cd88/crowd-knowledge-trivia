@@ -35,6 +35,7 @@ POST /api/team-merge-requests/:id/reject
 
 ```txt
 POST /api/questions/:questionId/submissions
+GET  /api/questions/:questionId/team-submissions
 POST /api/questions/:questionId/final-answer
 GET  /api/session/:joinCode/dashboard
 ```
@@ -59,7 +60,11 @@ The player endpoint should return only the requester-relevant state:
 - team state
 - visible session state
 - current question state
+- suggested/default CF for the current player
 - visible aggregates
+- leader-only member submission drill-down when requester is a team leader and the phase allows it
 - next suggested poll interval
 
 The host display endpoint should not include member-private information.
+
+The team submission drill-down endpoint should be role-gated to team leaders. It returns the leader’s own team only, not the whole venue.

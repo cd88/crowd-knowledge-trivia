@@ -217,8 +217,8 @@ Player screen shows:
 
 - question text
 - answer input
-- CF slider/input
-- current personal CoC score
+- CF slider/input, prefilled from the player’s running calibration state
+- current personal CoC score, shown as calibration bias: underconfident / aligned / overconfident
 - lock-in button
 - teammate submission status, but not necessarily teammate answers before lock
 
@@ -236,7 +236,13 @@ Use a simple slider:
 
 Store internally as `0.0–1.0`.
 
-Default should not be 50%. Force an intentional selection or use a low default like 0.25.
+The next-round default should not be static. It should reflect the player’s running calibration state:
+
+- if the player is well-aligned, default near their recent CF average
+- if the player is underconfident, nudge the default upward
+- if the player is overconfident, nudge the default downward
+
+Players can always override the default. The point is not to force a system opinion, but to create a visible calibration prompt: “the system thinks you usually under/overstate your confidence.”
 
 ### Lock-in
 
@@ -274,12 +280,24 @@ CoC-adjusted estimate: 741
 
 Leader can select one of those suggestions or enter/edit a custom final answer.
 
+The leader can also open a team list / drill-down panel before submitting. For each teammate, show:
+
+- display name
+- submitted answer
+- submitted CF
+- current CoC calibration bias
+- CoC-adjusted CF / effective weight
+- recent calibration label, such as “aligned,” “underconfident,” “overconfident,” or “volatile”
+- whether this player pulled the aggregate toward or away from the correct answer after reveal
+
+Before the answer is revealed, avoid showing correctness language. Use neutral contribution language, such as “high influence,” “low influence,” or “outlier estimate.”
+
 Store final answer with provenance:
 
 ```txt
 RAW_MODE
 CF_WEIGHTED
-COC_WEIGHTED
+COC_ADJUSTED
 CUSTOM
 ```
 
