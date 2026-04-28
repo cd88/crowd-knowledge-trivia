@@ -1,32 +1,56 @@
-# Team Trivia CoC Prototype Spec Pack
+# Team Trivia CoC Prototype
 
-A prototype spec for a mobile-first, venue-friendly team trivia game where the main mechanic is calibrated collective judgment.
+A mobile-first Express prototype for team trivia with confidence (`CF`) and confidence-of-confidence (`CoC`) mechanics.
 
-The game asks each player to submit:
+This build intentionally uses in-memory storage so you can run and change the prototype quickly. It is structured so the game loop, calibration math, and polling contracts can be moved to Mongo/Mongoose later.
 
-- an answer
-- a CF score: confidence in that answer
+## Run
 
-The system compares:
+```bash
+npm install
+npm start
+```
 
-- raw team answer
-- CF-weighted answer
-- CF × CoC-weighted answer
+Open:
 
-CoC means confidence-of-confidence: a rolling reliability weight for how well a player uses confidence.
+```text
+http://localhost:3000
+```
 
-## Files
+Create a session, then open the host screen and player link in separate browser windows/devices.
 
-- `01-product-premise.md` — core concept, goals, and non-goals
-- `02-ux-flows.md` — host, player, team, question, and end-game flows
-- `03-architecture.md` — Express/Mongo architecture, polling model, stateless timers
-- `04-data-model.md` — draft Mongo/Mongoose-style data model
-- `05-api-sketch.md` — rough endpoint map
-- `06-calibration-scoring.md` — CF, CoC, aggregation, scoring, and feedback logic
-- `07-mvp-cutline.md` — build/defer list and implementation sequence
+## What is implemented
 
-## Current recommendation
+- Host-created sessions
+- QR/link join flow
+- Team creation/joining
+- Host-driven game phases
+- 1-second-ish polling with jitter and `version` change detection
+- Multiple-choice and numeric seeded questions
+- Player preliminary answer + CF submission
+- CF default derived from running CoC
+- Signed CoC bias model from `-1` to `1`
+  - `0` = calibrated / aligned
+  - negative = underconfident
+  - positive = overconfident
+- Raw, CF-weighted, and CoC-adjusted aggregate answers
+- Leader drill-down into team member answer/CF submissions
+- Leader final-answer selection
+- Score + CoC updates after reveal
+- Basic player/team feedback and end-game scoreboard
 
-Start boring technically: Express + MongoDB + compact 1-second polling during active gameplay. Avoid WebSockets until the game mechanic proves itself.
+## Prototype caveats
 
-The main product risk is not realtime infrastructure. The main risk is whether players understand and enjoy CF/CoC feedback.
+- Storage is in memory and resets on server restart.
+- No auth/accounts; player identity is localStorage token based.
+- No production-grade anti-cheat/rate-limiting.
+- No AI question generation, ads, payments, or voice narration yet.
+- Team merge is not implemented in this first runnable cut.
+
+## Suggested next pass
+
+1. Add Mongo/Mongoose persistence.
+2. Add a real host session configuration form.
+3. Expand dashboard charts for CF/CoC deltas.
+4. Add team merge requests.
+5. Add venue branding/custom question packs.

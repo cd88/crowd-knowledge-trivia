@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Play · Team Trivia CoC</title><link rel="stylesheet" href="/styles.css">
+  <style>
+    .phase-banner { border-radius: 1rem; padding: .75rem 1rem; font-size: .9rem; font-weight: 600; }
+    .phase-banner.waiting  { background: #0e1830; border: 1px solid var(--line); color: var(--muted); }
+    .phase-banner.active   { background: #0d2417; border: 1px solid #2a5c3a; color: var(--good); }
+    .phase-banner.locked   { background: #1a1800; border: 1px solid #5c4a00; color: var(--warn); }
+    .phase-banner.reveal   { background: #1a0e0f; border: 1px solid #5c2028; color: var(--bad); }
+    .submitted-tag { display: inline-flex; align-items: center; gap: .4rem; color: var(--good); font-weight: 700; }
+    .sub-count { font-size: .82rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="container stack">
+    <section class="card stack">
+      <div class="row">
+        <div><p class="kicker">Player</p><h1 id="title">Join session</h1></div>
+        <span id="phase" class="pill shrink">Loading…</span>
+      </div>
+
+      <!-- Join form (shown when not yet joined) -->
+      <div id="joinPanel" class="stack">
+        <label>Display name<input id="displayName" autocomplete="nickname"></label>
+        <button class="primary" id="joinBtn">Join</button>
+      </div>
+
+      <!-- Player stats bar (shown when joined) -->
+      <div id="mePanel" hidden class="grid three">
+        <div class="stat"><span class="muted">You</span><strong id="meName">—</strong></div>
+        <div class="stat"><span class="muted">CoC bias</span><strong id="meCoc">—</strong></div>
+        <div class="stat"><span class="muted">Next CF default</span><strong id="meCfDefault">—</strong></div>
+      </div>
+
+      <!-- Phase-specific status banner -->
+      <div id="phaseBanner" hidden></div>
+
+      <!-- Per-round calibration feedback -->
+      <div id="feedback"></div>
+    </section>
+
+    <!-- Team panel (hidden until joined) -->
+    <section class="card stack" id="teamPanel" hidden>
+      <h2>Team</h2>
+      <div id="currentTeam"></div>
+      <div class="grid two" id="teamActions">
+        <div class="stack">
+          <h3>Create team</h3>
+          <input id="teamName" placeholder="Team name">
+          <button id="createTeam">Create team</button>
+        </div>
+        <div class="stack">
+          <h3>Join team</h3>
+          <div id="teamList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Question + answer panel -->
+    <section class="card stack">
+      <div class="row"><h2>Question</h2><div id="timer" class="timer shrink">—</div></div>
+      <p id="question" class="question">Waiting for host…</p>
+      <div id="answerForm" class="stack" hidden>
+        <div id="choiceButtons"></div>
+        <label id="numericLabel">Answer
+          <input id="answerInput" inputmode="decimal" placeholder="Your preliminary answer">
+        </label>
+        <label>CF (confidence): <strong id="cfLabel">50%</strong>
+          <input id="cf" type="range" min="0" max="100" value="50">
+        </label>
+        <button class="primary" id="submitAnswer">Submit answer + CF</button>
+      </div>
+      <div id="submittedBanner" hidden></div>
+      <div id="aggregates"></div>
+      <div id="leaderTools" class="stack" hidden></div>
+      <div id="answerReveal"></div>
+    </section>
+
+    <section class="card stack"><h2>Scoreboard</h2><div id="scoreboard"></div></section>
+  </main>
+
+<script type="module">
+import { api, escapeHtml, fmtCoC, fmtMs, fmtPct, getToken, jitter, joinCodeFromPath } from '/app.js';
+
+const joinCode = joinCodeFromPath();
+const playerToken = getToken(`playerToken:${joinCode}`);
+let version = 0;
+let state = null;
+let selectedChoice = null;
+const els = Object.fromEntries([...document.querySelectorAll('[id]')].map(el => [el.id, el]));
+
+els.cf.addEventListener('input', () => els.cfLabel.textContent = `${els.cf.value}%`);
+els.joinBtn.addEventListener('click', join);
+els.createTeam.addEventListener('click', createTeam);
+els.submitAnswer.addEventListener('click', submitAnswer);
+
+async function join() {
+  try {
+    const name = els.displayName.value.trim() || 'Player';
+    const data = await api(`/api/session/${joinCode}/join`, { method: 'POST', body: { displayName: name, playerToken } });
+    localStorage.setItem(`playerToken:${joinCode}`, data.playerToken);
+    version = 0;
+    await poll();
+  } catch(e) { alert(e.message); }
+}
+
+async function createTeam() {
+  try {
+    await api(`/api/session/${joinCode}/teams`, { method: 'POST', body: { name: els.teamName.value || 'Team', playerToken } });
+    version = 0; await poll();
+  } catch(e) { alert(e.message); }
+}
+
+async function joinTeam(teamId) {
+  try {
+    await api(`/api/session/${joinCode}/teams/${teamId}/join`, { method: 'POST', body: { playerToken } });
+    version = 0; await poll();
+  } catch(e) { alert(e.message); }
+}
+
+async function submitAnswer() {
+  try {
+    const q = state?.question;
+    const answer = q?.type === 'MULTIPLE_CHOICE' ? selectedChoice : els.answerInput.value;
+    if (!answer && answer !== 0) { alert('Select or enter an answer first.'); return; }
+    await api(`/api/session/${joinCode}/submissions`, { method: 'POST', body: { playerToken, answer, cf: Number(els.cf.value) / 100 } });
+    version = 0; await poll();
+  } catch(e) { alert(e.message); }
+}
+
+async function submitFinal(answer, provenance) {
+  try {
+    await api(`/api/session/${joinCode}/final-answer`, { method: 'POST', body: { playerToken, teamId: state.team.id, answer, provenance } });
+    version = 0; await poll();
+  } catch(e) { alert(e.message); }
+}
+
+async function poll() {
+  let next = 1000;
+  try {
+    const data = await api(`/api/session/${joinCode}/state?playerToken=${encodeURIComponent(playerToken)}&sinceVersion=${version}`);
+    next = data.nextPollMs;
+    if (data.changed) { version = data.version; state = data; render(data); }
+  } catch(e) { els.phase.textContent = e.message; next = 3000; }
+  setTimeout(poll, jitter(next));
+}
+
+// ── Phase banner helpers ──────────────────────────────────────────────────────
+function phaseBanner(cls, html) {
+  els.phaseBanner.hidden = false;
+  els.phaseBanner.className = `phase-banner ${cls}`;
+  els.phaseBanner.innerHTML = html;
+}
+
+function renderPhaseBanner(data) {
+  const phase = data.session?.phase;
+  const joined = !!data.player;
+  const inTeam  = !!data.team;
+  const isLeader = data.team && data.leaderDrilldown;
+  const submitted = data.hasSubmitted;
+
+  if (!joined) { els.phaseBanner.hidden = true; return; }
+
+  if (phase === 'DRAFT') {
+    phaseBanner('waiting', '⏳ Session hasn\'t started yet. Hang tight.');
+  } else if (phase === 'OPEN') {
+    if (!inTeam) phaseBanner('waiting', '👥 Join or create a team to play.');
+    else phaseBanner('waiting', '⏳ Waiting for the host to start the game…');
+  } else if (phase === 'COUNTDOWN') {
+    phaseBanner('waiting', '🚀 Game starting… get ready!');
+  } else if (phase === 'QUESTION_ACTIVE') {
+    if (!inTeam) {
+      phaseBanner('locked', '⚠️ You need to be on a team to answer this question.');
+    } else if (submitted) {
+      const total = data.team?.memberCount ?? '?';
+      const count = data.teamSubmittedCount ?? '?';
+      phaseBanner('active', `<span class="submitted-tag">✓ Answer submitted</span> <span class="sub-count">${count} / ${total} teammates done</span>`);
+    } else {
+      phaseBanner('active', '✏️ Submit your answer and confidence rating below.');
+    }
+  } else if (phase === 'AGGREGATES_VISIBLE') {
+    if (isLeader) phaseBanner('locked', '👇 Pick the final answer for your team below.');
+    else phaseBanner('waiting', '⏳ Waiting for your team leader to submit the final answer…');
+  } else if (phase === 'FINAL_SUBMITTED') {
+    if (isLeader) phaseBanner('active', '✓ Final answer submitted. Waiting for the host to reveal the answer.');
+    else phaseBanner('waiting', '✓ Your leader has submitted. Waiting for the host…');
+  } else if (phase === 'ANSWER_REVEAL') {
+    phaseBanner('reveal', '📣 Correct answer is revealed below. Calibration updated!');
+  } else if (phase === 'INTER_QUESTION') {
+    phaseBanner('waiting', '☕ Inter-question break. Review your calibration feedback below.');
+  } else if (phase === 'ENDED') {
+    phaseBanner('reveal', '🏁 Game over! Check the scoreboard below.');
+  } else {
+    els.phaseBanner.hidden = true;
+  }
+}
+
+// ── Main render ───────────────────────────────────────────────────────────────
+function render(data) {
+  const s = data.session;
+  els.title.textContent = s.name;
+  els.phase.textContent = `${s.phase.replace(/_/g,' ')} · ${fmtMs(s.remainingMs)}`;
+  els.timer.textContent = fmtMs(s.remainingMs);
+
+  const joined = !!data.player;
+  els.joinPanel.hidden = joined;
+  els.mePanel.hidden = !joined;
+  els.teamPanel.hidden = !joined;
+
+  if (data.player) {
+    els.meName.textContent = data.player.displayName;
+    els.meCoc.textContent = fmtCoC(data.player.stats.coc);
+    els.meCfDefault.textContent = fmtPct(data.player.stats.cfDefault);
+    els.feedback.innerHTML = (data.player.stats.lastFeedback || [])
+      .map(f => `<p class="pill">${escapeHtml(f)}</p>`).join('');
+  }
+
+  renderPhaseBanner(data);
+  renderTeams(data);
+  renderQuestion(data);
+  renderScoreboard(data);
+}
+
+function renderTeams(data) {
+  const phase = data.session?.phase;
+  const enrollable = ['OPEN'].includes(phase);
+
+  if (data.team) {
+    els.currentTeam.innerHTML = `
+      <div class="stat">
+        <span class="muted">Current team</span>
+        <strong>${escapeHtml(data.team.name)}</strong>
+        <span class="muted">${data.player.role}</span>
+      </div>`;
+  } else {
+    els.currentTeam.innerHTML = '<p class="muted">Not on a team yet.</p>';
+  }
+
+  // Hide team join/create controls once game is running
+  els.teamActions.hidden = !!data.team || !enrollable;
+
+  if (!data.team && enrollable) {
+    els.teamList.innerHTML = data.teams.map(t =>
+      `<div class="row card notice">
+        <div><strong>${escapeHtml(t.name)}</strong>
+        <p class="muted">${t.memberCount} member${t.memberCount !== 1 ? 's' : ''} · ${t.score} pts</p></div>
+        <button class="shrink" data-join-team="${t.id}">Join</button>
+      </div>`
+    ).join('') || '<p class="muted">No teams yet.</p>';
+    document.querySelectorAll('[data-join-team]').forEach(b => b.onclick = () => joinTeam(b.dataset.joinTeam));
+  }
+}
+
+function renderQuestion(data) {
+  const q = data.question;
+  selectedChoice = selectedChoice && q?.choices?.includes(selectedChoice) ? selectedChoice : null;
+
+  if (!q) {
+    els.question.textContent = 'Waiting for host…';
+    els.answerForm.hidden = true;
+    els.submittedBanner.hidden = true;
+    els.aggregates.innerHTML = '';
+    els.leaderTools.hidden = true;
+    els.answerReveal.innerHTML = '';
+    return;
+  }
+
+  els.question.textContent = `${q.category}: ${q.text}`;
+
+  const phase = data.session.phase;
+  const canAnswer = data.player?.teamId && phase === 'QUESTION_ACTIVE' && !data.hasSubmitted;
+  const canReAnswer = data.player?.teamId && phase === 'QUESTION_ACTIVE' && data.hasSubmitted;
+
+  // Show form or submitted badge
+  els.answerForm.hidden = !canAnswer;
+  if (canReAnswer) {
+    els.submittedBanner.hidden = false;
+    els.submittedBanner.innerHTML = `<p class="submitted-tag" style="padding:.4rem 0">✓ Answer submitted — <button style="font-size:.85rem;padding:.3rem .7rem" id="reAnswerBtn">Change answer</button></p>`;
+    document.querySelector('#reAnswerBtn')?.addEventListener('click', () => {
+      els.answerForm.hidden = false;
+      els.submittedBanner.hidden = true;
+    });
+  } else {
+    els.submittedBanner.hidden = true;
+  }
+
+  if (canAnswer) {
+    const defaultCf = Math.round((data.player?.stats?.cfDefault ?? 0.5) * 100);
+    if (!els.cf.dataset.touchedQuestion || els.cf.dataset.touchedQuestion !== q.id) {
+      els.cf.value = defaultCf;
+      els.cf.dataset.touchedQuestion = q.id;
+      els.cfLabel.textContent = `${defaultCf}%`;
+      els.answerInput.value = '';
+      selectedChoice = null;
+    }
+  }
+
+  if (q.type === 'MULTIPLE_CHOICE') {
+    els.numericLabel.hidden = true;
+    els.choiceButtons.innerHTML = q.choices.map(c =>
+      `<button class="choice ${selectedChoice === c ? 'selected' : ''}" data-choice="${escapeHtml(c)}">${escapeHtml(c)}</button>`
+    ).join('');
+    document.querySelectorAll('[data-choice]').forEach(b =>
+      b.onclick = () => { selectedChoice = b.dataset.choice; renderQuestion(state); });
+  } else {
+    els.numericLabel.hidden = false;
+    els.choiceButtons.innerHTML = '';
+  }
+
+  renderAggregates(data);
+  renderLeaderTools(data);
+
+  els.answerReveal.innerHTML = q.correctAnswer
+    ? `<div class="card notice">
+        <p class="good"><strong>Correct answer:</strong> ${escapeHtml(String(q.correctAnswer))}</p>
+        <p class="muted">${escapeHtml(q.explanation)}</p>
+       </div>`
+    : '';
+}
+
+function renderAggregates(data) {
+  const a = data.aggregate;
+  const visible = ['AGGREGATES_VISIBLE','FINAL_SUBMITTED','ANSWER_REVEAL','INTER_QUESTION','ENDED'].includes(data.session.phase);
+  if (!a || !visible) { els.aggregates.innerHTML = ''; return; }
+  els.aggregates.innerHTML = `
+    <div class="grid three">
+      <div class="stat"><span class="muted">Raw / plurality</span><strong>${escapeHtml(String(a.rawAnswer ?? '—'))}</strong></div>
+      <div class="stat"><span class="muted">CF-weighted</span><strong>${escapeHtml(String(a.cfWeightedAnswer ?? '—'))}</strong></div>
+      <div class="stat"><span class="muted">CoC-adjusted</span><strong>${escapeHtml(String(a.cocWeightedAnswer ?? '—'))}</strong></div>
+    </div>`;
+}
+
+function renderLeaderTools(data) {
+  const canLead = data.leaderDrilldown && ['AGGREGATES_VISIBLE','FINAL_SUBMITTED'].includes(data.session.phase);
+  els.leaderTools.hidden = !canLead;
+  if (!canLead) return;
+
+  const a = data.aggregate || {};
+  const isSubmitted = data.session.phase === 'FINAL_SUBMITTED';
+
+  els.leaderTools.innerHTML = `
+    <div class="card notice stack">
+      <div class="row">
+        <h3 style="margin:0">Leader: pick final answer</h3>
+        ${isSubmitted ? '<span class="submitted-tag shrink">✓ Submitted</span>' : ''}
+      </div>
+      <div class="grid three">
+        <button data-final="RAW"         data-answer="${escapeHtml(String(a.rawAnswer ?? ''))}">
+          Raw<br><strong>${escapeHtml(String(a.rawAnswer ?? '—'))}</strong>
+        </button>
+        <button data-final="CF_WEIGHTED" data-answer="${escapeHtml(String(a.cfWeightedAnswer ?? ''))}">
+          CF-weighted<br><strong>${escapeHtml(String(a.cfWeightedAnswer ?? '—'))}</strong>
+        </button>
+        <button class="primary" data-final="COC_WEIGHTED" data-answer="${escapeHtml(String(a.cocWeightedAnswer ?? ''))}">
+          CoC-adjusted<br><strong>${escapeHtml(String(a.cocWeightedAnswer ?? '—'))}</strong>
+        </button>
+      </div>
+      <label>Custom final answer
+        <input id="customFinal" placeholder="Optional override">
+      </label>
+      <button data-custom-final>Submit custom</button>
+
+      <h3>Team submissions</h3>
+      <table class="table"><thead>
+        <tr><th>Player</th><th>Answer</th><th>CF</th><th>Adj CF</th><th>CoC</th></tr>
+      </thead><tbody>
+        ${data.leaderDrilldown.map(r =>
+          `<tr>
+            <td>${escapeHtml(r.displayName)}${r.role === 'LEADER' ? ' <span class="muted">(leader)</span>' : ''}</td>
+            <td>${escapeHtml(r.answer ?? (r.submitted ? '—' : '…waiting'))}</td>
+            <td>${r.cf == null ? '—' : fmtPct(r.cf)}</td>
+            <td>${r.adjustedCf == null ? '—' : fmtPct(r.adjustedCf)}</td>
+            <td>${fmtCoC(r.coc)}</td>
+          </tr>`
+        ).join('')}
+      </tbody></table>
+    </div>`;
+
+  document.querySelectorAll('[data-final]').forEach(b =>
+    b.onclick = () => submitFinal(b.dataset.answer, b.dataset.final));
+  document.querySelector('[data-custom-final]').onclick = () =>
+    submitFinal(document.querySelector('#customFinal').value, 'CUSTOM');
+}
+
+function renderScoreboard(data) {
+  const sb = data.scoreboard;
+  if (!sb?.teams?.length) { els.scoreboard.innerHTML = '<p class="muted">No scores yet.</p>'; return; }
+  els.scoreboard.innerHTML = `
+    <table class="table"><tbody>
+      ${sb.teams.map((t, i) =>
+        `<tr><td class="muted">${i + 1}</td><td><strong>${escapeHtml(t.name)}</strong></td><td>${t.score} pts</td></tr>`
+      ).join('')}
+    </tbody></table>`;
+}
+
+poll();
+</script>
+</body>
+</html>
+
+function renderScoreboard(data) {
+  els.scoreboard.innerHTML = `<table class="table"><thead><tr><th>Team</th><th>Score</th></tr></thead><tbody>${data.scoreboard.teams.map(t => `<tr><td>${escapeHtml(t.name)}</td><td>${t.score}</td></tr>`).join('')}</tbody></table>`;
+}
+poll();
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host · Team Trivia CoC</title><link rel="stylesheet" href="/styles.css">
+  <style>
+    .phase-badge { font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; padding: .3rem .8rem; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--accent); }
+    .ctrl-group { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    .ctrl-group .sep { width: 1px; height: 2rem; background: var(--line); margin: 0 .25rem; }
+    .phase-hint { color: var(--muted); font-size: .9rem; }
+    button[data-action]:disabled { display: none; }
+    .sub-badge { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="container stack">
+    <section class="card stack">
+      <div class="row">
+        <div>
+          <p class="kicker">Host screen</p>
+          <h1 id="title">Loading…</h1>
+        </div>
+        <div class="shrink stack" style="align-items:flex-end;gap:.5rem">
+          <img id="qr" class="qr" alt="Join QR" style="width:80px;height:80px;border-radius:.5rem">
+          <span id="phaseBadge" class="phase-badge">—</span>
+        </div>
+      </div>
+      <div class="row">
+        <div class="big-code" id="code"></div>
+        <div>
+          <p id="joinUrl" class="muted"></p>
+          <p id="status" class="muted"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <div class="row"><h2>Controls</h2><span id="phaseHint" class="phase-hint shrink"></span></div>
+      <div class="ctrl-group" id="ctrlGroup">
+        <button data-action="open"             data-phases="DRAFT">Open session</button>
+        <button data-action="countdown"        data-phases="OPEN">Start countdown</button>
+        <div class="sep" id="sepPause" hidden></div>
+        <button data-action="pause"            data-phases="COUNTDOWN QUESTION_ACTIVE">Pause timer</button>
+        <button data-action="resume"           data-phases="COUNTDOWN QUESTION_ACTIVE">Resume timer</button>
+        <div class="sep" id="sepQuestion" hidden></div>
+        <button data-action="startQuestion"    data-phases="COUNTDOWN INTER_QUESTION" class="primary">Start question</button>
+        <button data-action="revealAggregates" data-phases="QUESTION_ACTIVE">Close &amp; reveal aggregates</button>
+        <button data-action="revealAnswer"     data-phases="AGGREGATES_VISIBLE FINAL_SUBMITTED" class="primary">Reveal correct answer</button>
+        <button data-action="interQuestion"    data-phases="ANSWER_REVEAL">Show inter-question</button>
+        <div class="sep" id="sepEnd" hidden></div>
+        <button data-action="end"              data-phases="INTER_QUESTION ANSWER_REVEAL QUESTION_ACTIVE AGGREGATES_VISIBLE FINAL_SUBMITTED ENDED" class="danger">End game</button>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <div class="row">
+        <h2>Current question <span id="qProgress" class="muted" style="font-weight:400;font-size:1rem"></span></h2>
+        <div class="timer shrink" id="timer">—</div>
+      </div>
+      <p class="question" id="question">No question active.</p>
+      <div id="choices"></div>
+      <div id="answerReveal"></div>
+    </section>
+
+    <section class="grid two">
+      <div class="card stack"><h2>Teams</h2><div id="teams"></div></div>
+      <div class="card stack">
+        <h2>Aggregates &amp; finals</h2>
+        <div id="aggregates"></div>
+      </div>
+    </section>
+
+    <section class="card stack"><h2>Scoreboard</h2><div id="scoreboard"></div></section>
+  </main>
+
+  <script type="module">
+    import { api, escapeHtml, fmtMs, jitter, joinCodeFromPath } from '/app.js';
+
+    const joinCode = joinCodeFromPath();
+    const params = new URLSearchParams(location.search);
+    const hostToken = params.get('hostToken') || localStorage.getItem(`hostToken:${joinCode}`);
+    if (hostToken) localStorage.setItem(`hostToken:${joinCode}`, hostToken);
+
+    let version = 0;
+    let lastPhase = null;
+    let lastTimerPaused = false;
+
+    // Phase → hint text shown below the controls heading
+    const PHASE_HINTS = {
+      DRAFT:              'Session is in draft. Open it so players can join.',
+      OPEN:               'Waiting for players to join. Start the countdown when ready.',
+      COUNTDOWN:          'Countdown running. Start the first question when you\'re ready.',
+      QUESTION_ACTIVE:    'Question is live. Close it when you\'re ready to show aggregates.',
+      AGGREGATES_VISIBLE: 'Aggregates visible. Waiting for team leaders to submit final answers.',
+      FINAL_SUBMITTED:    'Some teams have submitted. Reveal the correct answer when all are done.',
+      ANSWER_REVEAL:      'Correct answer shown. Move to inter-question feedback.',
+      INTER_QUESTION:     'Inter-question feedback. Start the next question or end the game.',
+      ENDED:              'Game over.',
+    };
+
+    // Which data-action buttons are enabled per phase
+    const PHASE_ACTIONS = {
+      DRAFT:              ['open'],
+      OPEN:               ['countdown'],
+      COUNTDOWN:          ['startQuestion'],          // pause/resume handled via timer state
+      QUESTION_ACTIVE:    ['revealAggregates'],
+      AGGREGATES_VISIBLE: ['revealAnswer'],
+      FINAL_SUBMITTED:    ['revealAnswer'],
+      ANSWER_REVEAL:      ['interQuestion'],
+      INTER_QUESTION:     ['startQuestion', 'end'],
+      ENDED:              [],
+    };
+
+    async function action(name) {
+      try {
+        await api(`/api/session/${joinCode}/host/${name}`, { method: 'POST', body: { hostToken } });
+        version = 0;
+        await poll();
+      } catch (e) { alert(e.message); }
+    }
+
+    document.querySelectorAll('[data-action]').forEach(b =>
+      b.addEventListener('click', () => action(b.dataset.action)));
+
+    async function loadQr() {
+      try {
+        const data = await api(`/api/session/${joinCode}/qr`);
+        document.querySelector('#qr').src = data.dataUrl;
+        document.querySelector('#joinUrl').textContent = data.url;
+      } catch (_) {}
+    }
+
+    async function poll() {
+      let next = 1000;
+      try {
+        const data = await api(
+          `/api/session/${joinCode}/state?view=host&hostToken=${encodeURIComponent(hostToken || '')}&sinceVersion=${version}`
+        );
+        next = data.nextPollMs;
+        if (data.changed) { version = data.version; render(data); }
+      } catch (e) {
+        document.querySelector('#status').textContent = e.message;
+        next = 3000;
+      }
+      setTimeout(poll, jitter(next));
+    }
+
+    function updateControls(phase, timerPaused) {
+      const allowed = new Set(PHASE_ACTIONS[phase] || []);
+      // Pause/resume are special: mutually exclusive based on timer state
+      if (['COUNTDOWN', 'QUESTION_ACTIVE'].includes(phase)) {
+        if (timerPaused) allowed.add('resume'); else allowed.add('pause');
+      }
+      document.querySelectorAll('[data-action]').forEach(btn => {
+        const phases = btn.dataset.phases?.split(' ') || [];
+        const phaseAllowed = phases.includes(phase);
+        const actionAllowed = allowed.has(btn.dataset.action);
+        btn.disabled = !(phaseAllowed && actionAllowed);
+      });
+      document.querySelector('#phaseHint').textContent = PHASE_HINTS[phase] || '';
+      document.querySelector('#phaseBadge').textContent = phase?.replace(/_/g, ' ') || '—';
+    }
+
+    function render(data) {
+      const s = data.session;
+      document.querySelector('#title').textContent = `${s.name} · ${s.venueName}`;
+      document.querySelector('#code').textContent = s.joinCode;
+      document.querySelector('#status').textContent = `${s.playersCount} players · ${s.teamsCount} teams`;
+      document.querySelector('#timer').textContent = fmtMs(s.remainingMs);
+
+      const isPaused = data.host?.timerIsPaused ?? false;
+      updateControls(s.phase, isPaused);
+
+      if (data.question) {
+        document.querySelector('#qProgress').textContent =
+          `(${s.currentQuestionIndex + 1} / ${s.totalQuestions})`;
+        document.querySelector('#question').textContent =
+          `${data.question.category}: ${data.question.text}`;
+        document.querySelector('#choices').innerHTML =
+          (data.question.choices || []).map(c => `<span class="pill">${escapeHtml(c)}</span>`).join(' ');
+        document.querySelector('#answerReveal').innerHTML = data.question.correctAnswer
+          ? `<p class="good"><strong>Answer:</strong> ${escapeHtml(data.question.correctAnswer)}</p>
+             <p class="muted">${escapeHtml(data.question.explanation)}</p>`
+          : '';
+      } else {
+        document.querySelector('#qProgress').textContent = '';
+        document.querySelector('#question').textContent = 'No question active.';
+        document.querySelector('#choices').innerHTML = '';
+        document.querySelector('#answerReveal').innerHTML = '';
+      }
+
+      document.querySelector('#teams').innerHTML =
+        data.teams.map(t =>
+          `<div class="stat">
+            <strong>${escapeHtml(t.name)}</strong>
+            <span>${t.memberCount} member${t.memberCount !== 1 ? 's' : ''} · ${t.score} pts</span>
+          </div>`
+        ).join('') || '<p class="muted">No teams yet.</p>';
+
+      const aggs = data.host?.allAggregates || [];
+      const finals = data.host?.finalAnswers || [];
+      document.querySelector('#aggregates').innerHTML = aggs.map(a => {
+        const f = finals.find(x => x.teamId === a.teamId);
+        const team = data.teams.find(t => t.id === a.teamId);
+        const finalHtml = f
+          ? `<span class="good">✓ ${escapeHtml(f.answer)} <span class="muted">(${f.provenance})</span></span>`
+          : '<span class="muted">not submitted</span>';
+        return `<div class="card notice stack" style="gap:.4rem">
+          <strong>${escapeHtml(team?.name || 'Team')}</strong>
+          <div class="grid three" style="gap:.4rem">
+            <div class="stat"><span class="muted">Raw</span><strong>${escapeHtml(String(a.rawAnswer ?? '—'))}</strong></div>
+            <div class="stat"><span class="muted">CF-weighted</span><strong>${escapeHtml(String(a.cfWeightedAnswer ?? '—'))}</strong></div>
+            <div class="stat"><span class="muted">CoC-adjusted</span><strong>${escapeHtml(String(a.cocWeightedAnswer ?? '—'))}</strong></div>
+          </div>
+          <p style="margin:0">Final: ${finalHtml}</p>
+        </div>`;
+      }).join('') || '<p class="muted">No aggregates yet.</p>';
+
+      document.querySelector('#scoreboard').innerHTML =
+        `<table class="table"><tbody>
+          ${data.scoreboard.teams.map(t =>
+            `<tr><td>${escapeHtml(t.name)}</td><td>${t.score} pts</td></tr>`
+          ).join('')}
+        </tbody></table>`;
+    }
+
+    loadQr();
+    poll();
+  </script>
+</body>
+</html>

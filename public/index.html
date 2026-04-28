@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Team Trivia CoC Prototype</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="container hero stack">
+    <p class="kicker">Prototype</p>
+    <h1>Team Trivia CoC</h1>
+    <p class="muted">Trivia as a wrapper for calibrated collective judgment. Create a session, open the host screen on a TV, and let players join from their phones.</p>
+    <section class="card stack">
+      <h2>Create session</h2>
+      <div class="grid three">
+        <p><label>Session name<br><input id="name" value="CoC Trivia Night"></label></p>
+        <p><label>Venue<br><input id="venue" value="County Fair Taproom"></label></p>
+        <p><label>Theme<br><input id="theme" value="Mixed estimation + trivia"></label></p>
+      </div>
+      <button class="primary" id="create">Create host session</button>
+      <div id="result"></div>
+    </section>
+    <section class="card stack">
+      <h2>Existing in-memory sessions</h2>
+      <div id="sessions" class="stack"></div>
+    </section>
+  </main>
+  <script type="module">
+    import { api, escapeHtml } from '/app.js';
+    const result = document.querySelector('#result');
+    async function refresh() {
+      const data = await api('/api/sessions');
+      document.querySelector('#sessions').innerHTML = data.sessions.length ? data.sessions.map(s => `
+        <div class="card notice">
+          <strong>${escapeHtml(s.name)}</strong>
+          <p class="muted">${escapeHtml(s.venueName)} · ${s.phase} · ${s.players} players · ${s.teams} teams</p>
+          <p><a href="/play/${s.joinCode}">Player link</a></p>
+        </div>`).join('') : '<p class="muted">No sessions yet.</p>';
+    }
+    document.querySelector('#create').addEventListener('click', async () => {
+      const data = await api('/api/sessions', { method: 'POST', body: {
+        name: document.querySelector('#name').value,
+        venueName: document.querySelector('#venue').value,
+        theme: document.querySelector('#theme').value
+      }});
+      result.innerHTML = `
+        <div class="card notice stack">
+          <p class="big-code">${data.joinCode}</p>
+          <p><a href="${data.hostUrl}">Open host screen</a></p>
+          <p><a href="${data.playerUrl}">Open player join link</a></p>
+        </div>`;
+      await refresh();
+    });
+    refresh();
+  </script>
+</body>
+</html>
